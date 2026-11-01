@@ -1,0 +1,4 @@
+{
+  "chat.hooks.enabled": true,
+  "github.copilot.chat.hooks.enabled": true
+}

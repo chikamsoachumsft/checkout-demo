@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Checkout (sample)</title>
+<style>body{font:15px system-ui;max-width:480px;margin:40px auto;color:#1b1f2a}button{font:inherit;padding:10px 16px;background:#16213a;color:#fff;border:0;border-radius:8px;cursor:pointer}.muted{color:#667085}</style></head>
+<body>
+  <h1>Checkout</h1>
+  <p class="muted">Fictional sample service · Commerce team</p>
+  <p>Order <code id="order"></code> · $42.00</p>
+  <button id="pay">Pay</button>
+  <p id="out" class="muted"></p>
+<script>
+  const orderId = 'order-' + Math.random().toString(36).slice(2, 8);
+  document.getElementById('order').textContent = orderId;
+  // No client-side retries (decision 16 Oct) — the server retries safely with idempotency keys.
+  document.getElementById('pay').onclick = async () => {
+    const r = await fetch('/api/checkout/pay', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ orderId, amountCents: 4200 }) });
+    document.getElementById('out').textContent = JSON.stringify(await r.json());
+  };
+</script>
+</body>
+</html>

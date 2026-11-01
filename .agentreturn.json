@@ -1,0 +1,11 @@
+{
+  "project": "checkout",
+  "projectName": "Checkout",
+  "url": "https://agentreturn-demo.onrender.com",
+  "brand": {
+    "customName": "Commerce · Checkout",
+    "customWorkspace": "Commerce (sample)",
+    "customColor": "#C8784F",
+    "examplePrompt": "Add idempotency keys to refunds and captures"
+  }
+}

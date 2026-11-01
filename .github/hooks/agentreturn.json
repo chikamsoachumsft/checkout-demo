@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "node scripts/agentreturn-hook.js --tool github-copilot --event sessionStart",
+        "powershell": "node scripts/agentreturn-hook.js --tool github-copilot --event sessionStart",
+        "bash": "node scripts/agentreturn-hook.js --tool github-copilot --event sessionStart"
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "command": "node scripts/agentreturn-hook.js --tool github-copilot --event userPromptSubmitted",
+        "powershell": "node scripts/agentreturn-hook.js --tool github-copilot --event userPromptSubmitted",
+        "bash": "node scripts/agentreturn-hook.js --tool github-copilot --event userPromptSubmitted"
+      }
+    ]
+  }
+}

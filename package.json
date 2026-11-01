@@ -1,0 +1,29 @@
+{
+  "name": "checkout-demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fictional sample: the Commerce team's Checkout service (payment retries, idempotency, webhooks). Used to demo AgentReturn.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "test": "tsx --test tests/checkout/idempotency.test.ts",
+    "join": "node scripts/join.mjs",
+    "brief": "node scripts/agentreturn.mjs brief --human",
+    "page": "node scripts/agentreturn.mjs page",
+    "project": "node scripts/agentreturn.mjs project",
+    "feed": "node scripts/agentreturn.mjs feed",
+    "agentreturn": "node scripts/agentreturn.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

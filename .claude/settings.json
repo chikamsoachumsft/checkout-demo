@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/agentreturn-hook.js --tool claude-code --event SessionStart",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/agentreturn-hook.js --tool claude-code --event UserPromptSubmit",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
