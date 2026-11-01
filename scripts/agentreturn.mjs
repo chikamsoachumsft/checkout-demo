@@ -9,6 +9,8 @@
  *   agentreturn page    [--print]                               open the readable project page in your browser
  *   agentreturn trials  [--opt-out]                             join (or leave) the pilot group for trial fixes
  *   agentreturn optimizations                                   fixes for this project and their measured results
+ *   agentreturn ledger  [--import-local [url]] [--email you@x]  show or backfill the local receipts ledger (source of truth)
+ *   agentreturn replay  [--to url] [--since 2026-10-24]          rebuild a server's hook receipts from the local ledger
  *   agentreturn feed    [--ticket KEY] [--type DECISION] [--since 2026-10-30] [--limit 30]
  *   agentreturn log     --type WORK|DECISION|DISCUSSION|RESEARCH --title "..." --summary "one line"
  *                       [--body "..." | --body-file notes.md | --body-file -]  [--ticket KEY] [--feature KEY]
@@ -187,6 +189,76 @@ async function main() {
         console.log(`Open this link in your browser (it contains your personal access — don't share it):
 ${link}`);
       }
+      return;
+    }
+    case 'ledger': {
+      // The local ledger is the source of truth for everything the hook reported.
+      const file = path.join(CONFIG_DIR, 'receipts-ledger.jsonl');
+      const lines = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+      if (args['import-local']) {
+        // Backfill: copy receipts already stored by a local AgentReturn server into the ledger (deduplicated by session id).
+        const from = String(args['import-local'] === true ? 'http://localhost:3000' : args['import-local']).replace(/\/+$/, '');
+        const res = await fetch(`${from}/api/governance/summary`).catch((e) => die(`could not reach ${from} (${e.message})`));
+        if (!res.ok) die(`${from} returned ${res.status}`);
+        const { receipts = [] } = await res.json();
+        const have = new Set(lines.map((l) => l.session_id));
+        const email = args.email ? String(args.email).toLowerCase() : null;
+        let added = 0;
+        for (const r of receipts) {
+          if (have.has(r.session_id)) continue;
+          if (email && String(r.git_email || '').toLowerCase() !== email) continue;
+          const line = {
+            recorded_at: new Date(r.timestamp).toISOString(),
+            session_id: r.session_id,
+            endpoint: `${from}/v1/hooks/evaluate`,
+            memory_project: null,
+            work_item_id: r.work_item_id,
+            imported_from: from,
+            payload: {
+              session_id: r.session_id, hook_event: r.hook_event, git_email: r.git_email, repo_name: r.repo_name,
+              branch_name: r.branch_name, agent_tool: r.agent_tool, model: r.model,
+              input_tokens: Number(r.input_tokens || 0), output_tokens: Number(r.output_tokens || 0),
+              work_item_id: r.work_item_id, just_exploring: r.work_item_id === '__unticketed__' || undefined,
+              activity_type: r.activity_type,
+            },
+          };
+          fs.mkdirSync(CONFIG_DIR, { recursive: true });
+          fs.appendFileSync(file, JSON.stringify(line) + '\n', 'utf-8');
+          have.add(r.session_id);
+          added++;
+        }
+        console.log(`✓ Imported ${added} receipts from ${from} into ${file}`);
+        return;
+      }
+      const byDay = {};
+      for (const l of lines) byDay[l.recorded_at.slice(0, 10)] = (byDay[l.recorded_at.slice(0, 10)] || 0) + 1;
+      console.log(`${file}\n${lines.length} records`);
+      for (const [d, n] of Object.entries(byDay).sort()) console.log(`  ${d}  ${n}`);
+      return;
+    }
+    case 'replay': {
+      // Rebuild a server's hook receipts from the local ledger (after a reset/redeploy). Safe to run twice.
+      const file = path.join(CONFIG_DIR, 'receipts-ledger.jsonl');
+      if (!fs.existsSync(file)) die(`no ledger at ${file}`);
+      const target = String(args.to || url).replace(/\/+$/, '');
+      const since = args.since ? new Date(String(args.since)) : null;
+      const records = fs.readFileSync(file, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+        .filter((l) => l.session_id && (!since || new Date(l.recorded_at) >= since))
+        .map((l) => ({ payload: l.payload, session_id: l.session_id, recorded_at: l.recorded_at }));
+      let done = 0;
+      const failed = [];
+      for (let i = 0; i < records.length; i += 100) {
+        const res = await fetch(`${target}/v1/hooks/replay`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ records: records.slice(i, i + 100) }),
+        }).catch((e) => die(`could not reach ${target} (${e.message})`));
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) die(`${res.status} ${data.error ?? 'replay failed'}`);
+        done += data.replayed;
+        failed.push(...(data.failed || []));
+      }
+      console.log(`✓ Replayed ${done} of ${records.length} ledger records into ${target}${failed.length ? ` (${failed.length} failed)` : ''}`);
       return;
     }
     case 'trials': {

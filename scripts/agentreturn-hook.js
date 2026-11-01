@@ -144,6 +144,26 @@ function saveSessionContext(key, data) {
 // SECURITY NOTE: pushing instructions/files to developer machines will be flagged by CISOs. Before enterprise
 // use this needs signed, policy-controlled, reviewable delivery (see Google Doc / backlog).
 // ---------------------------------------------------------------------------
+// Local ledger = the developer's source of truth for everything this hook reported. The hosted server can be
+// rebuilt from it at any time with `agentreturn replay` (records keep their original time and session id).
+const LEDGER_FILE = path.join(CONTEXT_DIR, 'receipts-ledger.jsonl');
+function appendLedger(payloadObj, serverResult, endpoint) {
+  try {
+    if (!fs.existsSync(CONTEXT_DIR)) fs.mkdirSync(CONTEXT_DIR, { recursive: true });
+    const line = {
+      recorded_at: new Date().toISOString(),
+      session_id: (serverResult && serverResult.session_id) || payloadObj.session_id || null,
+      endpoint,
+      memory_project: (serverResult && serverResult.memory_project) || null,
+      work_item_id: serverResult && serverResult.vector_1_where_spend_belongs ? serverResult.vector_1_where_spend_belongs.work_item_id : null,
+      payload: payloadObj,
+    };
+    fs.appendFileSync(LEDGER_FILE, JSON.stringify(line) + '\n', 'utf-8');
+  } catch {
+    // never block the developer because of the ledger
+  }
+}
+
 const MANAGED_MARKER = 'Managed by AgentReturn';
 const LOCAL_FIX_FILES = {
   cursor: ['.cursor', 'rules', 'agentreturn-optimizations.mdc'],
@@ -799,6 +819,7 @@ try {
     });
     clearTimeout(timeout);
     result = await resp.json();
+    appendLedger(payload, result, opts.endpoint);
 
     // 1. Update local Last-Known-Good ticket cache whenever online
     if (Array.isArray(result?.candidate_work_items)) {
@@ -816,11 +837,21 @@ try {
       fs.unlinkSync(queueFile);
       for (const qLine of queuedLines) {
         try {
-          await fetch(opts.endpoint, {
+          const qResp = await fetch(opts.endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              ...(MEMORY_CONFIG.token ? { Authorization: `Bearer ${MEMORY_CONFIG.token}` } : {}),
+            },
             body: qLine,
           });
+          const qResult = await qResp.json().catch(() => null);
+          try {
+            const { queued_at, ...queuedPayload } = JSON.parse(qLine);
+            appendLedger(queuedPayload, qResult, opts.endpoint);
+          } catch {
+            // ignore unparsable queued line
+          }
         } catch {
           // ignore individual replay failure
         }
