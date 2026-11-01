@@ -12,7 +12,9 @@
     "page": "node scripts/agentreturn.mjs page",
     "project": "node scripts/agentreturn.mjs project",
     "feed": "node scripts/agentreturn.mjs feed",
-    "agentreturn": "node scripts/agentreturn.mjs"
+    "agentreturn": "node scripts/agentreturn.mjs",
+    "trials": "node scripts/agentreturn.mjs trials",
+    "optimizations": "node scripts/agentreturn.mjs optimizations"
   },
   "dependencies": {
     "express": "^4.21.1"

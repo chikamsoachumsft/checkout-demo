@@ -7,6 +7,8 @@
  *   agentreturn brief   [--ticket KEY] [--human] [--peek]       project → feature → ticket context
  *   agentreturn project                                         Start here, features, tickets, decisions, people
  *   agentreturn page    [--print]                               open the readable project page in your browser
+ *   agentreturn trials  [--opt-out]                             join (or leave) the pilot group for trial fixes
+ *   agentreturn optimizations                                   fixes for this project and their measured results
  *   agentreturn feed    [--ticket KEY] [--type DECISION] [--since 2026-10-30] [--limit 30]
  *   agentreturn log     --type WORK|DECISION|DISCUSSION|RESEARCH --title "..." --summary "one line"
  *                       [--body "..." | --body-file notes.md | --body-file -]  [--ticket KEY] [--feature KEY]
@@ -184,6 +186,25 @@ async function main() {
       } catch {
         console.log(`Open this link in your browser (it contains your personal access — don't share it):
 ${link}`);
+      }
+      return;
+    }
+    case 'trials': {
+      // Pilots receive every trial fix for the project, not just the random 1-in-10 sample.
+      const optIn = !args['opt-out'];
+      const r = await api('POST', `/projects/${needProject()}/trials`, { opt_in: optIn });
+      console.log(r.pilot ? `✓ You are a pilot for ${project}: trial fixes will reach your sessions.` : `✓ You left the pilot group for ${project}; you'll get trial fixes only if randomly sampled.`);
+      return;
+    }
+    case 'optimizations': {
+      const { optimizations } = await api('GET', `/projects/${needProject()}/optimizations`);
+      if (args.json) return console.log(JSON.stringify(optimizations, null, 2));
+      if (!optimizations.length) return console.log('(no optimization fixes for this project yet)');
+      for (const o of optimizations) {
+        const k = (n) => (n == null ? '—' : `${(Number(n) / 1000).toFixed(1)}k`);
+        console.log(`\n${o.title}${o.ticket_key ? ` (${o.ticket_key})` : ''} — ${o.rollout_mode}${o.rollout_mode === 'trial' ? ` (${o.trial_percent}% + pilots)` : ''}`);
+        console.log(`  with the fix:    ${o.treated_sessions} sessions · avg ${k(o.treated_avg_tokens)} tokens/session`);
+        console.log(`  without the fix: ${o.control_sessions} sessions · avg ${k(o.control_avg_tokens)} tokens/session   (hook estimates, since applied)`);
       }
       return;
     }

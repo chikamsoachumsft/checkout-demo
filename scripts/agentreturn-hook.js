@@ -136,6 +136,89 @@ function saveSessionContext(key, data) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Optimization fixes delivered by AgentReturn through this hook.
+//   Claude Code      → injected into the agent's context once per session (additionalContext)
+//   Cursor / Copilot → written to a local instruction file the agent reads; the file is listed in the
+//                      repo's local .git/info/exclude (never committed) and removed when the fix is switched off.
+// SECURITY NOTE: pushing instructions/files to developer machines will be flagged by CISOs. Before enterprise
+// use this needs signed, policy-controlled, reviewable delivery (see Google Doc / backlog).
+// ---------------------------------------------------------------------------
+const MANAGED_MARKER = 'Managed by AgentReturn';
+const LOCAL_FIX_FILES = {
+  cursor: ['.cursor', 'rules', 'agentreturn-optimizations.mdc'],
+  'github-copilot': ['.github', 'instructions', 'agentreturn-optimizations.instructions.md'],
+};
+
+function fixesAsMarkdown(fixes) {
+  return fixes
+    .map((f) => `## ${f.title}${f.ticket_key ? ` (${f.ticket_key})` : ''} — ${f.rollout === 'trial' ? 'trial' : 'active'}\n\n${f.content}`)
+    .join('\n\n');
+}
+
+function excludeFromGit(root, relPath) {
+  try {
+    const excludeFile = path.join(root, '.git', 'info', 'exclude');
+    if (!fs.existsSync(path.join(root, '.git', 'info'))) return;
+    const current = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf-8') : '';
+    const line = '/' + relPath.split(path.sep).join('/');
+    if (!current.split(/\r?\n/).includes(line)) {
+      fs.appendFileSync(excludeFile, `${current.endsWith('\n') || !current ? '' : '\n'}# ${MANAGED_MARKER} (local optimization fixes)\n${line}\n`, 'utf-8');
+    }
+  } catch {
+    // non-fatal
+  }
+}
+
+function syncLocalFixFile(tool, root, fixes) {
+  const parts = LOCAL_FIX_FILES[tool];
+  if (!parts || !root) return null;
+  const rel = path.join(...parts);
+  const file = path.join(root, rel);
+  try {
+    if (fixes.length) {
+      const header =
+        tool === 'cursor'
+          ? `---\ndescription: ${MANAGED_MARKER} — active optimization fixes for this project. Do not edit.\nalwaysApply: true\n---\n\n`
+          : `---\napplyTo: "**"\n---\n\n<!-- ${MANAGED_MARKER} — active optimization fixes for this project. Do not edit. -->\n\n`;
+      const body = header + fixesAsMarkdown(fixes) + '\n';
+      const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : null;
+      if (existing !== body) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, body, 'utf-8');
+      }
+      excludeFromGit(root, rel);
+      return file;
+    }
+    if (fs.existsSync(file) && fs.readFileSync(file, 'utf-8').includes(MANAGED_MARKER)) fs.unlinkSync(file);
+  } catch {
+    // non-fatal: never block the developer because of a fix file
+  }
+  return null;
+}
+
+/** Returns { agentText, bannerLine } for this hook call; null when the server sent nothing about fixes. */
+function deliverOptimizations(result, sessionKey, tool, root, eventLower) {
+  const fixes = result && Array.isArray(result.optimizations) ? result.optimizations : null;
+  if (!fixes || !result.memory_project) return null;
+  syncLocalFixFile(tool, root, fixes);
+  let agentText = '';
+  const canInject = tool === 'claude-code' && (eventLower === 'sessionstart' || eventLower === 'userpromptsubmit');
+  if (canInject && fixes.length) {
+    const prior = (loadSessionContext(sessionKey) || {}).delivered_optimizations || [];
+    const fresh = fixes.filter((f) => !prior.includes(`${f.id}:${f.content.length}`));
+    if (fresh.length) {
+      agentText =
+        `# AgentReturn optimization fixes (from the project's owner; follow unless the user says otherwise)\n\n` + fixesAsMarkdown(fresh);
+      saveSessionContext(sessionKey, { delivered_optimizations: [...prior, ...fresh.map((f) => `${f.id}:${f.content.length}`)] });
+    }
+  }
+  const bannerLine = fixes.length
+    ? `⚡ AgentReturn fix active for this session: ${fixes.map((f) => `${f.title}${f.ticket_key ? ` (${f.ticket_key})` : ''} · ${f.rollout}`).join('; ')}`
+    : '';
+  return { agentText, bannerLine };
+}
+
 function extractInlineTagsFromText(text) {
   if (!text || typeof text !== 'string') return {};
   const extracted = {};
@@ -494,6 +577,7 @@ function loadSavedTenantConfig() {
     const repoCfgFile = path.join(baseDir, '.agentreturn.json');
     if (fs.existsSync(repoCfgFile)) {
       const repoCfg = JSON.parse(fs.readFileSync(repoCfgFile, 'utf-8'));
+      if (repoCfg && repoCfg.brand && repoCfg.brand.tenant) return { tenant: String(repoCfg.brand.tenant).toLowerCase() };
       if (repoCfg && repoCfg.brand && repoCfg.brand.customName) return { tenant: 'custom', ...repoCfg.brand };
     }
   } catch {
@@ -1139,13 +1223,27 @@ try {
       // Stay 100% silent on Stop, PreToolUse, and subsequent already-tagged prompts!
       const shouldShowBanner = isSessionStart || (didUserProvideInlineTag && !isSilentLifecycleEvent);
 
+      const optDelivery = deliverOptimizations(result, sessionKey, opts.agent_tool, opts.cwd, eventLower);
+
       if (!shouldShowBanner) {
+        // Quiet path; still hand newly delivered fixes to Claude Code once per session.
+        const quietContext =
+          optDelivery && optDelivery.agentText
+            ? {
+                systemMessage: optDelivery.bannerLine,
+                hookSpecificOutput: {
+                  hookEventName: isSessionStart ? 'SessionStart' : 'UserPromptSubmit',
+                  additionalContext: optDelivery.agentText,
+                },
+              }
+            : {};
         process.stdout.write(
           JSON.stringify({
             continue: true,
-            suppressOutput: true,
+            suppressOutput: !optDelivery || !optDelivery.agentText,
             permission: 'allow',
             permissionDecision: 'allow',
+            ...quietContext,
           }) + '\n'
         );
         process.exit(0);
@@ -1158,21 +1256,25 @@ try {
           : consolidatedConfirmation;
       const brief = result && result.memory_brief;
       const briefHuman = brief && brief.human ? String(brief.human) : '';
-      const cleanMessage = briefHuman
+      const withBrief = briefHuman
         ? isSessionStart
           ? `${briefHuman}\n\n${baseMessage}`
           : `${baseMessage}\n\n${briefHuman}`
         : baseMessage;
+      const cleanMessage = optDelivery && optDelivery.bannerLine ? `${withBrief}\n\n${optDelivery.bannerLine}` : withBrief;
       // Claude Code: put the full project -> feature -> ticket context into the agent's context window.
-      const agentContext =
-        brief && brief.agent && opts.agent_tool === 'claude-code'
-          ? {
-              hookSpecificOutput: {
-                hookEventName: isSessionStart ? 'SessionStart' : 'UserPromptSubmit',
-                additionalContext: String(brief.agent),
-              },
-            }
-          : {};
+      const agentParts = [
+        brief && brief.agent && opts.agent_tool === 'claude-code' ? String(brief.agent) : '',
+        optDelivery && optDelivery.agentText ? optDelivery.agentText : '',
+      ].filter(Boolean);
+      const agentContext = agentParts.length
+        ? {
+            hookSpecificOutput: {
+              hookEventName: isSessionStart ? 'SessionStart' : 'UserPromptSubmit',
+              additionalContext: agentParts.join('\n\n'),
+            },
+          }
+        : {};
 
       process.stdout.write(
         JSON.stringify({
