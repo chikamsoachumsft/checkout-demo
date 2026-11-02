@@ -234,9 +234,23 @@ function deliverOptimizations(result, sessionKey, tool, root, eventLower) {
     }
   }
   const bannerLine = fixes.length
-    ? `⚡ AgentReturn fix active for this session: ${fixes.map((f) => `${f.title}${f.ticket_key ? ` (${f.ticket_key})` : ''} · ${f.rollout}`).join('; ')}`
+    ? `⚡ Fix pushed to this session (${fixes[0].rollout}${fixes[0].ticket_key ? ` · ${fixes[0].ticket_key}` : ''}): ${fixes[0].title}${fixes.length > 1 ? ` +${fixes.length - 1} more` : ''} — your agent already has it`
     : '';
   return { agentText, bannerLine };
+}
+
+// The project welcome / catch-up is shown once per session: at session start where the tool has one (Claude Code,
+// Copilot), otherwise with the first prompt (Cursor has no session-start event).
+function takeFirstPromptWelcome(sessionKey, isSessionStart, isPromptEvent, briefHuman) {
+  const ctx = loadSessionContext(sessionKey) || {};
+  if (isSessionStart) {
+    saveSessionContext(sessionKey, { pending_welcome: null, welcomed: true });
+    return briefHuman;
+  }
+  if (!isPromptEvent) return '';
+  const pending = ctx.pending_welcome || '';
+  if (pending || !ctx.welcomed) saveSessionContext(sessionKey, { pending_welcome: null, welcomed: true });
+  return pending;
 }
 
 function extractInlineTagsFromText(text) {
@@ -580,6 +594,7 @@ const payload = {
     if (ev === 'sessionstart') return 'project';
     const isPrompt = ev === 'userpromptsubmit' || ev === 'beforesubmitprompt' || ev === 'userpromptsubmitted';
     if (isPrompt && inlineTags.work_item_id && inlineTags.work_item_id !== '__unticketed__') return 'ticket';
+    if (isPrompt && !priorCtx.welcomed && !priorCtx.pending_welcome) return 'project';
     return undefined;
   })(),
 };
@@ -1183,7 +1198,8 @@ try {
   }
 
   const activeBrand = buildTenantBrandBundle(activeTenantKey, savedCfg);
-  const {
+  // eslint-disable-next-line prefer-const -- friendlyBlockMessage gets the first-prompt welcome prepended
+  let {
     friendlyStartBanner,
     friendlyBlockMessage,
     menuCard,
@@ -1217,6 +1233,9 @@ try {
     }
   } else {
     if (isBlocked) {
+      const blockBrief = result && result.memory_brief && result.memory_brief.human ? String(result.memory_brief.human) : '';
+      const blockWelcome = takeFirstPromptWelcome(sessionKey, false, true, '') || blockBrief;
+      if (blockWelcome) friendlyBlockMessage = `\n${blockWelcome}\n${friendlyBlockMessage}`;
       // For Claude Code UserPromptSubmit and Cursor beforeSubmitPrompt: returning Exit Code 0 with decision:"block" / continue:false
       // blocks the prompt cleanly WITHOUT printing an ugly shell exit-code error prefix!
       if (
@@ -1263,6 +1282,8 @@ try {
 
       if (!shouldShowBanner) {
         // Quiet path; still hand newly delivered fixes to Claude Code once per session.
+        const isPromptEv = eventLower === 'userpromptsubmit' || eventLower === 'beforesubmitprompt' || eventLower === 'userpromptsubmitted';
+        const quietWelcome = takeFirstPromptWelcome(sessionKey, false, isPromptEv, '');
         const quietContext =
           optDelivery && optDelivery.agentText
             ? {
@@ -1276,10 +1297,13 @@ try {
         process.stdout.write(
           JSON.stringify({
             continue: true,
-            suppressOutput: !optDelivery || !optDelivery.agentText,
+            suppressOutput: (!optDelivery || !optDelivery.agentText) && !quietWelcome,
             permission: 'allow',
             permissionDecision: 'allow',
             ...quietContext,
+            ...(quietWelcome
+              ? { systemMessage: [quietWelcome, optDelivery && optDelivery.bannerLine].filter(Boolean).join('\n\n') }
+              : {}),
           }) + '\n'
         );
         process.exit(0);
@@ -1292,11 +1316,16 @@ try {
           : consolidatedConfirmation;
       const brief = result && result.memory_brief;
       const briefHuman = brief && brief.human ? String(brief.human) : '';
-      const withBrief = briefHuman
-        ? isSessionStart
-          ? `${briefHuman}\n\n${baseMessage}`
-          : `${baseMessage}\n\n${briefHuman}`
-        : baseMessage;
+      const isPromptEv2 = eventLower === 'userpromptsubmit' || eventLower === 'beforesubmitprompt' || eventLower === 'userpromptsubmitted';
+      const welcome = takeFirstPromptWelcome(sessionKey, isSessionStart, isPromptEv2, briefHuman);
+      // Session start reads: logo → welcome → ticket menu (welcome goes right before "Link this session…").
+      const linkAt = baseMessage.indexOf('Link this session');
+      const lineStart = linkAt > 0 ? baseMessage.lastIndexOf('\n', linkAt) + 1 : -1;
+      const withBrief = isSessionStart
+        ? welcome && lineStart > 0
+          ? `${baseMessage.slice(0, lineStart)}${welcome}\n\n${baseMessage.slice(lineStart)}`
+          : [welcome, baseMessage].filter(Boolean).join('\n\n')
+        : [welcome, baseMessage, briefHuman && briefHuman !== welcome ? briefHuman : ''].filter(Boolean).join('\n\n');
       const cleanMessage = optDelivery && optDelivery.bannerLine ? `${withBrief}\n\n${optDelivery.bannerLine}` : withBrief;
       // Claude Code: put the full project -> feature -> ticket context into the agent's context window.
       const agentParts = [
