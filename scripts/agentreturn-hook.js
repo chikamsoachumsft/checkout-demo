@@ -265,13 +265,17 @@ function extractInlineTagsFromText(text) {
       extracted.matched_tag = `#${rankNum}${modeLetter.toLowerCase()}`;
     }
   } else {
-    // 2. Extract explicit Ticket ID e.g. EXP-404, DEV-142, JIRA-234 (optionally with trailing mode letter like JIRA-234b)
+    // 2. Explicit ticket ID (e.g. DEV-142, optionally with a mode letter like DEV-142b). It only counts as a tag when
+    //    it is prefixed with '#' (anywhere in the prompt) or is the very first word of the prompt — so mentioning a
+    //    ticket, "exp 104", "GPT-4" or "utf-8" mid-sentence never switches the session's ticket.
     const cleanedForTickets = text.replace(/#[A-Z0-9-]+-AR\b/gi, '');
-    const ticketMatch = cleanedForTickets.match(/\b([A-Z]{2,10}-\d{1,6})([a-e])?\b/i);
-    // Also support natural spacing like "JIRA 234" or "JIRA TICKET 234" or "TICKET 234"
+    const hashTicket = cleanedForTickets.match(/(?:^|\s)#([A-Z]{2,10}-\d{1,6})([a-e])?\b/i);
+    const leadingTicket = !hashTicket && cleanedForTickets.match(/^\s*([A-Z]{2,10}-\d{1,6})([a-e])?\b/i);
+    const ticketMatch = hashTicket || leadingTicket;
+    // Natural spacing like "JIRA 234" / "TICKET 234" — also only as the first words of the prompt
     const naturalTicketMatch =
       !ticketMatch &&
-      cleanedForTickets.match(/\b(?:(JIRA|DEV|EXP|INC|PROJ|CHK|FIN|ADO|LIN)\s+(?:TICKET\s+)?|TICKET\s+)#?(\d{1,6})\b/i);
+      cleanedForTickets.match(/^\s*(?:(JIRA|DEV|EXP|INC|PROJ|CHK|FIN|ADO|LIN)\s+(?:TICKET\s+)?|TICKET\s+)#?(\d{1,6})\b/i);
     if (ticketMatch) {
       extracted.work_item_id = ticketMatch[1].toUpperCase();
       extracted.just_exploring = false;
@@ -1095,6 +1099,7 @@ try {
     ].join('\n');
 
     const friendlyStartBanner = [
+      '',
       brand.header,
       ``,
       `${C_WHITE}Link this session to your work.${R}`,
@@ -1103,7 +1108,7 @@ try {
       twoColumnTable,
     ].join('\n');
 
-    const menuCard = [brand.header, ``, twoColumnTable].join('\n');
+    const menuCard = ['', brand.header, ``, twoColumnTable].join('\n');
 
     const isDemoMode =
       process.argv.includes('--demo') ||
